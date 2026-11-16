@@ -1,0 +1,19 @@
+[project]
+name = "ecg-anomaly-lab"
+version = "0.1.0"
+description = "Course project for ECG analysis and anomaly detection"
+readme = "README.md"
+requires-python = ">=3.15.2,<3.16"
+dependencies = [
+    "numpy>=2,<3",
+    "pandas>=2.2,<4",
+    "scipy>=1.14,<2",
+    "matplotlib>=3.9,<4",
+    "scikit-learn>=1.5,<2",
+    "wfdb>=4.2,<5",
+    "jupyterlab>=4,<5",
+    "ipykernel>=6,<8",
+]
+
+[tool.uv]
+package = false
