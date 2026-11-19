@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
+    """Check the pinned environment, 144 raw files, and WFDB record readability.
+
+    Returns:
+        None. Prints check results and raises on an environment or data mismatch.
+    """
     expected_python = (ROOT / ".python-version").read_text().strip()
     if sys.version.split()[0] != expected_python:
         raise RuntimeError(f"Use Python {expected_python} through uv.")

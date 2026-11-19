@@ -1,7 +1,7 @@
 """Prepare complete ECG window matrices with selection audits and source metadata."""
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,8 +11,9 @@ import wfdb
 
 from scripts.create_splits import validate_record_splits
 from scripts.preprocessing import PreprocessingMode, PreprocessingState, TrainingStatistics, preprocess_window
+from scripts.rules import SPLIT_ORDER, is_beat_annotation, window_rejection_reasons
+from scripts.windows import ECGWindow, extract_ecg_window, generate_ecg_windows
 
-SPLIT_ORDER = ("train", "validation", "test")
 WINDOW_SIZE = 361
 METADATA_COLUMNS = [
     "row_id", "record_id", "subject_id", "channel", "channel_name",
@@ -37,36 +38,53 @@ class PreparedSplit:
     states: tuple[PreprocessingState, ...]
 
 
+def iter_training_n_windows(raw_directory: Path, training_record_ids: Sequence[str]) -> Iterator[ECGWindow]:
+    """Read complete, clean channel-0 N windows for the training reference.
+
+    Args:
+        raw_directory: Directory containing original WFDB files.
+        training_record_ids: Record IDs selected from the validated train split.
+
+    Yields:
+        Original complete N windows containing no additional eligible annotation.
+    """
+    for record_id in training_record_ids:
+        source = Path(raw_directory) / record_id
+        record = wfdb.rdrecord(str(source))
+        annotations = wfdb.rdann(str(source), "atr")
+        for window in generate_ecg_windows(record, annotations, annotation_symbol="N", channel=0):
+            if not window_rejection_reasons(window, "train"):
+                yield window
+
+
 def prepare_window_datasets(
     raw_directory: Path,
     record_splits: pd.DataFrame,
     source_record_ids: Sequence[str],
     statistics: TrainingStatistics,
-    extract_window: Callable,
     mode: PreprocessingMode = "standardize",
 ) -> tuple[dict[str, PreparedSplit], pd.DataFrame, pd.DataFrame]:
     """Build channel-0 datasets using the fixed reference-window selection rules.
 
-    Exclude + markers before constructing windows. Keep only central N in
-    train, and every original non-+ central symbol in validation/test. Reject
-    incomplete windows in every split. Full windows with other annotations
-    remain eligible. Reuse the supplied training statistics without fitting.
+    Exclude non-beat markers before constructing windows. Keep only central N in
+    train with no additional annotations. Validation/test accept every eligible
+    central symbol and may contain additional annotations. Reject incomplete
+    windows in every split. Reuse training statistics without fitting.
 
     Args:
         raw_directory: Directory containing the source WFDB recordings.
         record_splits: Validated record_id/subject_id/split manifest.
         source_record_ids: Complete list of 48 original record IDs.
-        statistics: Statistics fitted only on complete training N windows.
-        extract_window: The notebook's extract_ecg_window callable, accepting
-            a record, annotations, annotation_index, and channel.
+        statistics: Statistics fitted only on complete, clean training N windows.
         mode: Preprocessing mode applied to eligible windows (default: standardize).
 
     Returns:
         Tuple of datasets indexed by split, a per-symbol input/accepted/rejected
         count table, and counts by exact rejection reason. Simultaneous reasons
         are joined with ';' and counted once, so no reason priority is implied.
-        Source entries include + markers for audit purposes; they never produce
-        windows. Metadata stop positions are exclusive source sample indices.
+        Source entries include excluded non-beat markers for audit purposes;
+        they never produce windows. Metadata stop positions are exclusive
+        source sample indices.
     """
     validate_record_splits(record_splits, source_record_ids)
     training_ids = set(record_splits.loc[record_splits["split"] == "train", "record_id"])
@@ -89,10 +107,10 @@ def prepare_window_datasets(
         for index, symbol in enumerate(annotations.symbol):
             key = (assignment.split, symbol)
             input_counts[key] += 1
-            if symbol == "+":
-                rejected_reasons[(*key, "excluded_plus_marker")] += 1
+            if not is_beat_annotation(symbol):
+                rejected_reasons[(*key, "excluded_annotation_symbol")] += 1
                 continue
-            window = extract_window(record, annotations, annotation_index=index, channel=0)
+            window = extract_ecg_window(record, annotations, annotation_index=index, channel=0)
             if (
                 window.record_name != assignment.record_id
                 or window.annotation.annotation_index != index
@@ -100,11 +118,7 @@ def prepare_window_datasets(
                 or window.annotation.sample != int(annotations.sample[index])
             ):
                 raise ValueError("Extracted window provenance does not match the source annotation.")
-            reasons = []
-            if assignment.split == "train" and symbol != "N":
-                reasons.append("train_center_not_N")
-            if not window.is_complete:
-                reasons.append("incomplete_window")
+            reasons = window_rejection_reasons(window, assignment.split)
             if reasons:
                 rejected_reasons[(*key, ";".join(reasons))] += 1
                 continue

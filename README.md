@@ -25,7 +25,11 @@ Use a current uv release so it can download the pinned Python version.
 - All 48 raw records: `.hea` headers, `.dat` signals, `.atr` annotations in
   `data/raw/mitdb-1.0.0/`. No filtering, windowing, label mapping, or split applied.
 - `data/manifest.json`: source version, file URLs, and SHA-256 checksums.
-- A minimal starter notebook and an environment/data integrity check.
+- `notebooks/EDA.ipynb`: signal/window exploration, preprocessing, and dataset audits.
+- `data/record_splits.csv`: reproducible train/validation/test assignments by subject.
+- [Code and data guide](docs/CODE_GUIDE.md): function reference, selection rules,
+  notebook navigation, and reproduction commands.
+- An environment/data integrity check and automated tests.
 - `AGENTS.md`
 
 Raw data and the environment are excluded from Git. After cloning a code-only

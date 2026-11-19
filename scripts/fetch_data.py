@@ -14,10 +14,23 @@ MANIFEST = ROOT / "data/manifest.json"
 
 
 def checksum(data: bytes) -> str:
+    """Calculate a raw file's SHA-256 digest.
+
+    Args:
+        data: Original file bytes.
+
+    Returns:
+        Hexadecimal SHA-256 digest used by the dataset manifest.
+    """
     return hashlib.sha256(data).hexdigest()
 
 
 def main() -> None:
+    """Restore the 48 raw recordings and verify existing files against the manifest.
+
+    Returns:
+        None. Prints retrieval progress and raises if any file cannot be verified.
+    """
     records = (ROOT / "data/RECORDS").read_text().splitlines()
     if len(records) != 48 or len(set(records)) != 48 or not all(r.isdigit() for r in records):
         raise ValueError("Expected 48 unique record IDs in data/RECORDS.")
@@ -29,6 +42,14 @@ def main() -> None:
     RAW.mkdir(parents=True, exist_ok=True)
 
     def fetch(name: str) -> dict:
+        """Read or retrieve one raw file while preserving mismatching local data.
+
+        Args:
+            name: Original basename, including the hea, dat, or atr extension.
+
+        Returns:
+            Manifest entry containing file, URL, byte count, and SHA-256 digest.
+        """
         path = RAW / name
         source = BASE_URL + name
         if path.exists():

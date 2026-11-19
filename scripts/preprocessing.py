@@ -1,4 +1,4 @@
-"""Fit N-window statistics on training data and apply reversible preprocessing."""
+"""Fit clean N-window statistics on training data and apply reversible preprocessing."""
 
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
@@ -6,12 +6,14 @@ from typing import Literal
 
 import numpy as np
 
+from scripts.rules import window_rejection_reasons
+
 PreprocessingMode = Literal["none", "center", "standardize"]
 
 
 @dataclass(frozen=True)
 class TrainingStatistics:
-    """Pooled statistics of real samples from training N windows.
+    """Pooled statistics of complete, clean training N windows.
 
     Attributes:
         mean: Mean amplitude in the original signal unit.
@@ -77,15 +79,14 @@ def _signal_and_real_slice(window) -> tuple[np.ndarray, slice]:
 
 
 def fit_training_statistics(windows: Iterable, training_record_ids: Collection[str]) -> TrainingStatistics:
-    """Compute pooled mean, median, and population std from training N windows.
+    """Compute mean, median, and population std from complete, clean training N.
 
-    Artificial padding is excluded using its stored lengths, while real zero
-    amplitudes remain included. Samples shared by overlapping windows are
-    counted once per window. Incomplete windows and windows with neighboring
-    annotations are retained. Validation/test windows must not enter this fit.
+    Incomplete windows and windows with additional annotations are rejected.
+    Real zero amplitudes remain included. Samples shared by overlapping windows
+    are counted once per window. Validation/test windows must not enter this fit.
 
     Args:
-        windows: Iterable of ECGWindow objects centered on N, from one channel.
+        windows: Complete, clean ECGWindow objects centered on N, from one channel.
         training_record_ids: Record IDs selected from the validated split
             manifest where split is train. Any other source record is rejected.
 
@@ -105,6 +106,8 @@ def fit_training_statistics(windows: Iterable, training_record_ids: Collection[s
             raise ValueError(f"Non-training record in statistics fit: {window.record_name}")
         if window.annotation.symbol != "N":
             raise ValueError("Training statistics must be fitted on N windows only.")
+        if window_rejection_reasons(window, "train"):
+            raise ValueError("Training statistics require complete, clean N windows.")
         if channel is None:
             channel, unit = window.channel, window.unit
         if window.channel != channel or window.unit != unit:

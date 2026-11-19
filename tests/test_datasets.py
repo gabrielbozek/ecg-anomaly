@@ -11,6 +11,7 @@ import pandas as pd
 
 from scripts.datasets import prepare_window_datasets
 from scripts.preprocessing import TrainingStatistics, inverse_preprocess_window
+from scripts.rules import is_beat_annotation
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,8 +63,8 @@ class DatasetTests(unittest.TestCase):
         """Load the real split manifest and define deterministic source fixtures."""
         self.splits = pd.read_csv(ROOT / "data/record_splits.csv", dtype=str)
         self.record_ids = (ROOT / "data/RECORDS").read_text().splitlines()
-        self.symbols = ["+", "N", "A", "N", "A"]
-        self.samples = [10, 500, 600, 950, 970]
+        self.symbols = ["+", "N", "+", "N", "A", "N", "A"]
+        self.samples = [10, 300, 310, 600, 650, 950, 970]
         self.extracted_symbols = []
         self.statistics = TrainingStatistics(1.0, 1.0, 2.0, 361, 1, ("100",), 0, "mV")
 
@@ -103,7 +104,7 @@ class DatasetTests(unittest.TestCase):
             CandidateFixture with a centered 361-sample signal and source metadata.
         """
         symbol = annotations.symbol[annotation_index]
-        self.assertNotEqual(symbol, "+", "Excluded markers must never reach extraction.")
+        self.assertTrue(is_beat_annotation(symbol), "Excluded markers must never reach extraction.")
         self.extracted_symbols.append(symbol)
         center = int(annotations.sample[annotation_index])
         first, last = center - 180, center + 181
@@ -112,7 +113,7 @@ class DatasetTests(unittest.TestCase):
         values[left:361 - right] = record.p_signal[max(0, first):min(last, 1000), channel]
         neighbors = tuple(
             label for index, (sample, label) in enumerate(zip(annotations.sample, annotations.symbol))
-            if index != annotation_index and first <= sample < last and label != "+"
+            if index != annotation_index and first <= sample < last and is_beat_annotation(label)
         )
         return CandidateFixture(values, record.record_name, CenterFixture(annotation_index, center, symbol), left, right, neighbors)
 
@@ -127,25 +128,27 @@ class DatasetTests(unittest.TestCase):
         """
         with patch("scripts.datasets.wfdb.rdrecord", side_effect=self.source_record), patch(
             "scripts.datasets.wfdb.rdann", side_effect=self.source_annotations
+        ), patch(
+            "scripts.datasets.extract_ecg_window", side_effect=self.extract_candidate
         ):
             return prepare_window_datasets(
                 Path("/unused"), self.splits, self.record_ids,
                 statistics if statistics is not None else self.statistics,
-                self.extract_candidate,
             )
 
     def test_reference_and_evaluation_selection(self):
-        """Keep only full N in train, and full N/A in validation/test, including neighbors."""
+        """Keep clean full N in train and all full N/A in validation/test."""
         datasets, audit, reasons = self.prepare()
         self.assertEqual(datasets["train"].X.shape, (30, 361))
-        self.assertEqual(datasets["validation"].X.shape, (18, 361))
-        self.assertEqual(datasets["test"].X.shape, (18, 361))
+        self.assertEqual(datasets["validation"].X.shape, (27, 361))
+        self.assertEqual(datasets["test"].X.shape, (27, 361))
         self.assertEqual(set(datasets["train"].metadata["annotation_symbol"]), {"N"})
         for split in ("validation", "test"):
             self.assertEqual(set(datasets[split].metadata["annotation_symbol"]), {"N", "A"})
+            self.assertTrue(datasets[split].metadata["has_other_annotations"].any())
         for dataset in datasets.values():
             self.assertTrue(dataset.metadata["is_complete"].all())
-            self.assertTrue(dataset.metadata["has_other_annotations"].all())
+        self.assertFalse(datasets["train"].metadata["has_other_annotations"].any())
         self.assertNotIn("+", self.extracted_symbols)
         self.assertEqual(audit.loc[("train", "+"), "Accepted windows"], 0)
 
@@ -156,7 +159,24 @@ class DatasetTests(unittest.TestCase):
         pd.testing.assert_series_equal(rejected, audit["Rejected entries"], check_names=False)
         self.assertTrue((audit["Accepted windows"] + audit["Rejected entries"] == audit["Source entries"]).all())
         train_reasons = reasons.loc[(reasons["split"] == "train") & (reasons["symbol"] == "A")].set_index("reason")["count"].to_dict()
-        self.assertEqual(train_reasons, {"train_center_not_N": 30, "train_center_not_N;incomplete_window": 30})
+        self.assertEqual(train_reasons, {
+            "train_center_not_N;train_other_annotations": 30,
+            "train_center_not_N;incomplete_window;train_other_annotations": 30,
+        })
+
+    def test_nonbeat_markers_are_audited_without_becoming_windows(self):
+        """Exclude the entire non-beat group while accepting a nearby clean N."""
+        excluded = list("[!]x()ptu`'^|~+sT*D=\"@")
+        self.symbols = [*excluded, "N"]
+        self.samples = [300] * len(self.symbols)
+        datasets, audit, reasons = self.prepare()
+        for split, expected in (("train", 30), ("validation", 9), ("test", 9)):
+            self.assertEqual(datasets[split].X.shape, (expected, 361))
+            self.assertFalse(datasets[split].metadata["has_other_annotations"].any())
+            for symbol in excluded:
+                self.assertEqual(audit.loc[(split, symbol), "Accepted windows"], 0)
+        self.assertEqual(set(self.extracted_symbols), {"N"})
+        self.assertEqual(set(reasons["reason"]), {"excluded_annotation_symbol"})
 
     def test_matrix_rows_recover_source_and_inverse_values(self):
         """Use row metadata to reconstruct the original source window and undo scaling."""

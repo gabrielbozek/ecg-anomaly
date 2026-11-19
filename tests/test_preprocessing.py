@@ -34,6 +34,16 @@ class WindowFixture:
     channel_name: str = "MLII"
     other_annotations: tuple = ()
 
+    @property
+    def is_complete(self):
+        """Return whether this fixture has no artificial padding."""
+        return self.left_padding == self.right_padding == 0
+
+    @property
+    def has_other_annotations(self):
+        """Return whether additional eligible annotations are present."""
+        return bool(self.other_annotations)
+
 
 class PreprocessingTests(unittest.TestCase):
     """Exercise statistics, all transform modes, inversion, and data isolation."""
@@ -43,10 +53,12 @@ class PreprocessingTests(unittest.TestCase):
         self.training_window = WindowFixture(np.array([0.0, 1.0, 2.0, 3.0]))
         self.statistics = fit_training_statistics([self.training_window], ["100"])
 
-    def test_statistics_exclude_padding_but_include_real_zeros(self):
-        """Use padding lengths to distinguish artificial zeros from real amplitudes."""
+    def test_statistics_reject_padding_but_include_real_zeros(self):
+        """Exclude incomplete windows while retaining real zeros in clean inputs."""
         window = WindowFixture(np.array([0.0, 0.0, 0.0, 2.0, 4.0, 0.0]), left_padding=2, right_padding=1)
-        stats = fit_training_statistics([window], ["100"])
+        with self.assertRaisesRegex(ValueError, "complete, clean"):
+            fit_training_statistics([window], ["100"])
+        stats = fit_training_statistics([replace(window, signal=np.array([0.0, 2.0, 4.0]), left_padding=0, right_padding=0)], ["100"])
         self.assertEqual(stats.sample_count, 3)
         self.assertEqual(stats.window_count, 1)
         self.assertEqual(stats.mean, 2.0)
@@ -126,6 +138,12 @@ class PreprocessingTests(unittest.TestCase):
             with self.subTest(window=bad_window.record_name, symbol=bad_window.annotation.symbol):
                 with self.assertRaisesRegex(ValueError, message):
                     fit_training_statistics([bad_window], ["100"])
+
+    def test_statistics_reject_additional_annotations(self):
+        """Prevent a full central-N window with another annotation from fitting."""
+        dirty = replace(self.training_window, other_annotations=(AnnotationFixture("N"),))
+        with self.assertRaisesRegex(ValueError, "complete, clean"):
+            fit_training_statistics([dirty], ["100"])
 
     def test_statistics_reject_mixed_channels_or_units(self):
         """Keep statistics from silently pooling different channels or physical units."""
